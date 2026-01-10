@@ -143,6 +143,42 @@ if data_error:
 
 st.sidebar.success(f"✅ Data loaded: {len(feature_names)} features")
 
+# Show DBSCAN parameters and allow adjustments
+with st.sidebar.expander("🔧 Model Parameters", expanded=True):
+    st.write("**Current Model Settings:**")
+    st.write(f"- DBSCAN eps: {dbscan_model.eps:.4f}")
+    st.write(f"- DBSCAN min_samples: {dbscan_model.min_samples}")
+    st.write(f"- PCA components: {pca.n_components_}")
+    
+    st.divider()
+    
+    st.write("**Adjust Prediction Threshold:**")
+    use_custom_eps = st.checkbox("Use custom eps for prediction", value=False)
+    
+    if use_custom_eps:
+        custom_eps = st.slider(
+            "Prediction eps (larger = more lenient)",
+            min_value=0.1,
+            max_value=5.0,
+            value=float(dbscan_model.eps * 1.5),
+            step=0.1,
+            help="Increase this if too many points are classified as noise"
+        )
+        st.session_state['prediction_eps'] = custom_eps
+    else:
+        st.session_state['prediction_eps'] = dbscan_model.eps
+    
+    custom_min_samples = st.slider(
+        "Minimum neighbors required",
+        min_value=1,
+        max_value=10,
+        value=max(1, dbscan_model.min_samples - 2),
+        help="Decrease this if too many points are classified as noise"
+    )
+    st.session_state['prediction_min_samples'] = custom_min_samples
+    
+    st.info(f"Current: Need {st.session_state['prediction_min_samples']} neighbors within {st.session_state['prediction_eps']:.3f} distance")
+
 # Display data info
 with st.expander("📊 Training Data Overview", expanded=False):
     col1, col2, col3 = st.columns(3)
@@ -269,11 +305,40 @@ with tab1:
                     # Fit DBSCAN on training data
                     clusters_train = dbscan_model.fit_predict(pca_data_train)
                     
-                    # Find nearest neighbor in training data
+                    # Find k nearest neighbors in training data
                     distances = np.linalg.norm(pca_data_train - pca_input, axis=1)
+                    
+                    # Get prediction parameters from session state
+                    eps = st.session_state.get('prediction_eps', dbscan_model.eps)
+                    min_samples_pred = st.session_state.get('prediction_min_samples', max(1, dbscan_model.min_samples - 2))
+                    
+                    # Find all neighbors within eps distance
+                    neighbors_within_eps = distances <= eps
+                    num_neighbors = neighbors_within_eps.sum()
+                    
+                    if num_neighbors >= min_samples_pred:
+                        # Get cluster labels of neighbors within eps
+                        neighbor_clusters = clusters_train[neighbors_within_eps]
+                        # Remove noise points (-1)
+                        valid_clusters = neighbor_clusters[neighbor_clusters != -1]
+                        
+                        if len(valid_clusters) > 0:
+                            # Use majority voting among valid clusters
+                            from collections import Counter
+                            cluster_counts = Counter(valid_clusters)
+                            prediction = cluster_counts.most_common(1)[0][0]
+                            confidence_votes = cluster_counts.most_common(1)[0][1]
+                        else:
+                            # All neighbors are noise, so this is likely noise too
+                            prediction = -1
+                            confidence_votes = 0
+                    else:
+                        # Not enough neighbors, classify as noise
+                        prediction = -1
+                        confidence_votes = 0
+                    
                     nearest_idx = np.argmin(distances)
                     nearest_distance = distances[nearest_idx]
-                    prediction = clusters_train[nearest_idx]
                     
                     # Display results
                     st.success("✅ Prediction Complete!")
@@ -282,10 +347,15 @@ with tab1:
                     
                     with result_col1:
                         if prediction == -1:
-                            st.markdown("""
+                            st.markdown(f"""
                             <div class="metric-card">
                                 <h3 style="color: #ff4b4b;">⚠️ Noise (Outlier)</h3>
                                 <p>This data point doesn't fit into any cluster</p>
+                                <p style="font-size: 0.9em; margin-top: 0.5rem;">
+                                    Found {num_neighbors} neighbors (need {min_samples_pred})<br>
+                                    Within eps={eps:.3f}<br>
+                                    Nearest distance: {nearest_distance:.3f}
+                                </p>
                             </div>
                             """, unsafe_allow_html=True)
                         else:
@@ -293,6 +363,10 @@ with tab1:
                             <div class="metric-card">
                                 <h3 style="color: #00cc00;">🎯 Cluster {prediction}</h3>
                                 <p>Successfully assigned to a cluster</p>
+                                <p style="font-size: 0.9em; margin-top: 0.5rem;">
+                                    {num_neighbors} neighbors found within eps={eps:.3f}<br>
+                                    {confidence_votes} voted for this cluster
+                                </p>
                             </div>
                             """, unsafe_allow_html=True)
                     
@@ -302,6 +376,82 @@ with tab1:
                     with result_col3:
                         confidence = max(0, min(100, (1 - nearest_distance / 5) * 100))
                         st.metric("Confidence Score", f"{confidence:.1f}%")
+                    
+                    # Show explanation if noise
+                    if prediction == -1:
+                        st.warning(f"""
+                        **Why is this classified as Noise?**
+                        
+                        This point has only **{num_neighbors} neighbors** within distance **{eps:.3f}**, but needs **{min_samples_pred}** to form/join a cluster.
+                        The nearest training point is **{nearest_distance:.3f}** away.
+                        
+                        **Possible reasons:**
+                        - The input values are significantly different from training data
+                        - The country has a unique development profile
+                        - Some feature values may be outliers
+                        
+                        **Solutions:**
+                        - ✅ **Adjust prediction threshold** in the sidebar (increase eps or decrease min neighbors)
+                        - Check if input values are realistic and within normal ranges
+                        - Compare with similar countries to identify unusual features
+                        - Consider that this might represent a genuinely unique development pattern
+                        """)
+                        
+                        # Show neighbor distribution
+                        st.subheader("📊 Neighbor Analysis")
+                        col_a, col_b = st.columns(2)
+                        
+                        with col_a:
+                            # Show distance distribution
+                            distances_sorted = np.sort(distances)[:20]
+                            fig = go.Figure()
+                            fig.add_trace(go.Scatter(
+                                y=distances_sorted,
+                                mode='lines+markers',
+                                name='Distance to nearest 20 points',
+                                line=dict(color='blue')
+                            ))
+                            fig.add_hline(y=eps, line_dash="dash", line_color="red", 
+                                         annotation_text=f"eps threshold = {eps:.3f}")
+                            fig.update_layout(
+                                title="Distance to Nearest Training Points",
+                                yaxis_title="Distance",
+                                xaxis_title="Rank",
+                                height=300
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                        
+                        with col_b:
+                            st.metric("Neighbors within eps", num_neighbors)
+                            st.metric("Neighbors needed", min_samples_pred)
+                            st.metric("Nearest neighbor distance", f"{nearest_distance:.4f}")
+                            if num_neighbors > 0:
+                                st.metric("Average neighbor distance", f"{distances[neighbors_within_eps].mean():.4f}")
+                        
+                        # Show which features are most different
+                        if countries is not None:
+                            st.subheader("📊 Comparison with Nearest Country")
+                            nearest_country = countries.iloc[nearest_idx]
+                            
+                            comparison_df = pd.DataFrame({
+                                'Feature': feature_names,
+                                'Your Input': [user_inputs[f] for f in feature_names],
+                                f'{nearest_country}': df_model_temp.iloc[nearest_idx].values
+                            })
+                            comparison_df['Difference'] = comparison_df['Your Input'] - comparison_df[f'{nearest_country}']
+                            comparison_df['% Difference'] = (comparison_df['Difference'] / comparison_df[f'{nearest_country}'] * 100).round(2)
+                            comparison_df['Abs % Diff'] = comparison_df['% Difference'].abs()
+                            
+                            # Sort by absolute difference
+                            comparison_df = comparison_df.sort_values('Abs % Diff', ascending=False)
+                            
+                            st.write(f"**Nearest country:** {nearest_country} (distance: {nearest_distance:.3f})")
+                            st.write("**Top 10 most different features:**")
+                            st.dataframe(
+                                comparison_df[['Feature', 'Your Input', f'{nearest_country}', '% Difference']].head(10),
+                                use_container_width=True,
+                                hide_index=True
+                            )
                     
                     # Visualization of prediction point
                     st.subheader("📍 Prediction Point in PCA Space")
