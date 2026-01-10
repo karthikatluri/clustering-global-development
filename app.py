@@ -177,6 +177,15 @@ with st.sidebar.expander("🔧 Model Parameters", expanded=True):
     )
     st.session_state['prediction_min_samples'] = custom_min_samples
     
+    st.divider()
+    
+    use_fallback = st.checkbox(
+        "Use fallback for all-noise neighbors", 
+        value=True,
+        help="If all neighbors are noise, use the nearest non-noise point instead"
+    )
+    st.session_state['use_fallback'] = use_fallback
+    
     st.info(f"Current: Need {st.session_state['prediction_min_samples']} neighbors within {st.session_state['prediction_eps']:.3f} distance")
 
 # Display data info
@@ -311,6 +320,7 @@ with tab1:
                     # Get prediction parameters from session state
                     eps = st.session_state.get('prediction_eps', dbscan_model.eps)
                     min_samples_pred = st.session_state.get('prediction_min_samples', max(1, dbscan_model.min_samples - 2))
+                    use_fallback = st.session_state.get('use_fallback', True)
                     
                     # Find all neighbors within eps distance
                     neighbors_within_eps = distances <= eps
@@ -329,9 +339,25 @@ with tab1:
                             prediction = cluster_counts.most_common(1)[0][0]
                             confidence_votes = cluster_counts.most_common(1)[0][1]
                         else:
-                            # All neighbors are noise, so this is likely noise too
-                            prediction = -1
-                            confidence_votes = 0
+                            # All neighbors are noise
+                            if use_fallback:
+                                # Use nearest non-noise point
+                                non_noise_mask = clusters_train != -1
+                                if non_noise_mask.any():
+                                    non_noise_distances = distances.copy()
+                                    non_noise_distances[~non_noise_mask] = np.inf
+                                    nearest_non_noise_idx = np.argmin(non_noise_distances)
+                                    prediction = clusters_train[nearest_non_noise_idx]
+                                    confidence_votes = 1
+                                    nearest_idx = nearest_non_noise_idx
+                                    nearest_distance = distances[nearest_non_noise_idx]
+                                    st.info(f"ℹ️ All {num_neighbors} neighbors are noise points. Using nearest non-noise point (Cluster {prediction}) at distance {nearest_distance:.4f}")
+                                else:
+                                    prediction = -1
+                                    confidence_votes = 0
+                            else:
+                                prediction = -1
+                                confidence_votes = 0
                     else:
                         # Not enough neighbors, classify as noise
                         prediction = -1
@@ -427,6 +453,12 @@ with tab1:
                             st.metric("Nearest neighbor distance", f"{nearest_distance:.4f}")
                             if num_neighbors > 0:
                                 st.metric("Average neighbor distance", f"{distances[neighbors_within_eps].mean():.4f}")
+                                # Show cluster distribution of neighbors
+                                neighbor_clusters = clusters_train[neighbors_within_eps]
+                                noise_neighbors = (neighbor_clusters == -1).sum()
+                                valid_neighbors = num_neighbors - noise_neighbors
+                                st.metric("Neighbors that are noise", f"{noise_neighbors}/{num_neighbors}")
+                                st.metric("Neighbors in clusters", f"{valid_neighbors}/{num_neighbors}")
                         
                         # Show which features are most different
                         if countries is not None:
