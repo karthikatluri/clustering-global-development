@@ -111,13 +111,8 @@ dbscan_model, scaler, pca, model_error = load_model_components()
 
 if model_error:
     st.error(f"❌ Error loading models: {model_error}")
-    st.info("Please ensure the following files exist in the same directory as app.py:")
-    st.code("""
-- best_dbscan_model.joblib
-- scaler_no_outliers.joblib
-- pca_no_outliers.joblib
-- World_development_mesurement.csv
-    """)
+    st.info("Please ensure the following files exist in the repository:")
+    st.code("best_dbscan_model.joblib\nscaler_no_outliers.joblib\npca_no_outliers.joblib\nWorld_development_mesurement.csv")
     st.stop()
 
 st.success("✅ Models loaded successfully!")
@@ -143,7 +138,7 @@ df_model_temp, feature_names, countries, original_df, data_error = load_and_prep
 
 if data_error:
     st.error(f"❌ Error loading data: {data_error}")
-    st.info("Please make sure 'World_development_mesurement.csv' is in the same directory as app.py")
+    st.info("Please make sure 'World_development_mesurement.csv' is in the repository")
     st.stop()
 
 st.sidebar.success(f"✅ Data loaded: {len(feature_names)} features")
@@ -345,8 +340,8 @@ with tab1:
                     )
                     
                     fig.update_traces(marker=dict(size=10))
-                    # Make prediction point larger
-                    fig.data[-1].marker.size = 20
+                    if len(fig.data) > 0:
+                        fig.data[-1].marker.size = 20
                     
                     st.plotly_chart(fig, use_container_width=True)
                     
@@ -690,8 +685,3 @@ st.markdown("""
     </p>
 </div>
 """, unsafe_allow_html=True)
-```
-
-Then run this cell. You should see output like:
-```
-Writing app.py
