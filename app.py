@@ -1,22 +1,4 @@
-# Get training data in PCA space
-                pca_data_train = get_trained_data(scaler, pca, df_model_temp)
-                
-                if pca_data_train is not None:
-                    # Check if using K-Means or DBSCAN
-                    model_type = st.session_state.get('model_type', 'dbscan')
-                    
-                    if model_type == 'kmeans':
-                        # K-Means prediction
-                        prediction = dbscan_model.predict(pca_input)[0]
-                        
-                        # Calculate distance to cluster center
-                        cluster_center = dbscan_model.cluster_centers_[prediction]
-                        nearest_distance = np.linalg.norm(pca_input - cluster_center)
-                        
-                        # Find nearest training point in same cluster
-                        clusters_train = dbscan_model.labels_
-                        same_cluster_mask = clusters_train == prediction
-                        distancesimport streamlit as st
+import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
@@ -388,11 +370,7 @@ with st.sidebar.expander("🔧 Model Parameters", expanded=True):
 # Use retrained model if available
 if 'retrained_model' in st.session_state:
     dbscan_model = st.session_state['retrained_model']
-    model_type = st.session_state.get('model_type', 'dbscan')
-    if model_type == 'kmeans':
-        st.sidebar.success("✅ Using retrained K-Means model")
-    else:
-        st.sidebar.success("✅ Using retrained DBSCAN model")
+    st.sidebar.success("✅ Using retrained model")
 
 # Display data info
 with st.expander("📊 Training Data Overview", expanded=False):
@@ -466,50 +444,6 @@ with st.expander("📊 Training Data Overview", expanded=False):
                 cluster_counts = cluster_counts.sort_values('Count', ascending=False)
                 
                 st.dataframe(cluster_counts, use_container_width=True, hide_index=True)
-                
-                # Show which countries belong to each cluster
-                st.subheader("🌍 Countries by Cluster")
-                
-                # Create tabs for each cluster
-                cluster_tabs = st.tabs([f"Cluster {i}" if i != -1 else "Noise" for i in sorted(unique_clusters)])
-                
-                for idx, cluster_id in enumerate(sorted(unique_clusters)):
-                    with cluster_tabs[idx]:
-                        cluster_mask = clusters_train == cluster_id
-                        cluster_countries = countries[cluster_mask] if countries is not None else []
-                        
-                        if len(cluster_countries) > 0:
-                            col1, col2 = st.columns([1, 2])
-                            
-                            with col1:
-                                st.metric("Total Countries", len(cluster_countries))
-                                st.metric("Percentage", f"{len(cluster_countries)/len(clusters_train)*100:.1f}%")
-                            
-                            with col2:
-                                # Show as a nice grid
-                                countries_list = sorted(cluster_countries.tolist())
-                                
-                                # Create columns for better display
-                                num_cols = 3
-                                cols = st.columns(num_cols)
-                                
-                                for i, country in enumerate(countries_list):
-                                    col_idx = i % num_cols
-                                    with cols[col_idx]:
-                                        st.write(f"• {country}")
-                            
-                            # Option to download cluster members
-                            cluster_df = pd.DataFrame({'Country': countries_list})
-                            csv_cluster = cluster_df.to_csv(index=False)
-                            st.download_button(
-                                label=f"📥 Download Countries in {'Cluster ' + str(cluster_id) if cluster_id != -1 else 'Noise'}",
-                                data=csv_cluster,
-                                file_name=f"cluster_{cluster_id}_countries.csv",
-                                mime="text/csv",
-                                key=f"download_{cluster_id}"
-                            )
-                        else:
-                            st.info("No countries in this cluster")
 
 # Main content area with tabs
 tab1, tab2, tab3 = st.tabs(["🎯 Predict Cluster", "📈 Visualizations", "📋 Feature Analysis"])
