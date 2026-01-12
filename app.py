@@ -1,4 +1,22 @@
-import streamlit as st
+# Get training data in PCA space
+                pca_data_train = get_trained_data(scaler, pca, df_model_temp)
+                
+                if pca_data_train is not None:
+                    # Check if using K-Means or DBSCAN
+                    model_type = st.session_state.get('model_type', 'dbscan')
+                    
+                    if model_type == 'kmeans':
+                        # K-Means prediction
+                        prediction = dbscan_model.predict(pca_input)[0]
+                        
+                        # Calculate distance to cluster center
+                        cluster_center = dbscan_model.cluster_centers_[prediction]
+                        nearest_distance = np.linalg.norm(pca_input - cluster_center)
+                        
+                        # Find nearest training point in same cluster
+                        clusters_train = dbscan_model.labels_
+                        same_cluster_mask = clusters_train == prediction
+                        distancesimport streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
@@ -150,6 +168,185 @@ with st.sidebar.expander("🔧 Model Parameters", expanded=True):
     st.write(f"- DBSCAN min_samples: {dbscan_model.min_samples}")
     st.write(f"- PCA components: {pca.n_components_}")
     
+    # Check if model is problematic
+    pca_data_check = get_trained_data(scaler, pca, df_model_temp)
+    if pca_data_check is not None:
+        clusters_check = dbscan_model.fit_predict(pca_data_check)
+        n_clusters_check = len(set(clusters_check)) - (1 if -1 in clusters_check else 0)
+        
+        if n_clusters_check <= 1:
+            st.error(f"⚠️ Model has only {n_clusters_check} cluster(s)!")
+            st.write("Consider retraining with better parameters.")
+    
+    st.divider()
+    
+    # Option to retrain model
+    if st.checkbox("🔄 Retrain Model", value=False):
+        st.write("**Choose Method:**")
+        
+        retrain_method = st.radio(
+            "Clustering approach:",
+            ["Manual DBSCAN Parameters", "Target Number of Clusters", "K-Means Alternative"],
+            help="Different ways to configure clustering"
+        )
+        
+        if retrain_method == "Manual DBSCAN Parameters":
+            st.write("**DBSCAN Parameters:**")
+            
+            new_eps = st.slider(
+                "eps (distance threshold)",
+                min_value=0.1,
+                max_value=10.0,
+                value=1.0,
+                step=0.1,
+                help="Smaller = more clusters, larger = fewer clusters"
+            )
+            
+            new_min_samples = st.slider(
+                "min_samples",
+                min_value=2,
+                max_value=20,
+                value=5,
+                step=1,
+                help="Higher = stricter clustering"
+            )
+            
+            if st.button("🚀 Apply DBSCAN Parameters", type="primary"):
+                with st.spinner("Retraining DBSCAN..."):
+                    from sklearn.cluster import DBSCAN
+                    new_dbscan = DBSCAN(eps=new_eps, min_samples=new_min_samples)
+                    new_clusters = new_dbscan.fit_predict(pca_data_check)
+                    
+                    n_new_clusters = len(set(new_clusters)) - (1 if -1 in new_clusters else 0)
+                    n_noise = sum(new_clusters == -1)
+                    
+                    st.session_state['retrained_model'] = new_dbscan
+                    st.session_state['model_type'] = 'dbscan'
+                    st.success(f"✅ Found {n_new_clusters} clusters, {n_noise} noise points")
+                    st.rerun()
+        
+        elif retrain_method == "Target Number of Clusters":
+            st.write("**Specify Desired Clusters:**")
+            
+            target_clusters = st.slider(
+                "Number of clusters",
+                min_value=2,
+                max_value=15,
+                value=5,
+                step=1,
+                help="DBSCAN will try to find approximately this many clusters"
+            )
+            
+            search_method = st.selectbox(
+                "Search strategy:",
+                ["Quick Search", "Thorough Search"],
+                help="Quick = faster, Thorough = more accurate"
+            )
+            
+            if st.button("🎯 Find Best Parameters", type="primary"):
+                with st.spinner(f"Searching for parameters to create ~{target_clusters} clusters..."):
+                    from sklearn.cluster import DBSCAN
+                    
+                    # Search for best eps
+                    if search_method == "Quick Search":
+                        eps_range = np.linspace(0.3, 3.0, 15)
+                    else:
+                        eps_range = np.linspace(0.2, 5.0, 30)
+                    
+                    best_eps = None
+                    best_min_samples = None
+                    best_diff = float('inf')
+                    best_n_clusters = 0
+                    
+                    results = []
+                    
+                    for eps_val in eps_range:
+                        for min_samp in [3, 5, 7, 10]:
+                            test_dbscan = DBSCAN(eps=eps_val, min_samples=min_samp)
+                            test_clusters = test_dbscan.fit_predict(pca_data_check)
+                            n_clusters = len(set(test_clusters)) - (1 if -1 in test_clusters else 0)
+                            n_noise = sum(test_clusters == -1)
+                            
+                            # Penalize too much noise
+                            noise_penalty = (n_noise / len(test_clusters)) * 2
+                            diff = abs(n_clusters - target_clusters) + noise_penalty
+                            
+                            results.append({
+                                'eps': eps_val,
+                                'min_samples': min_samp,
+                                'clusters': n_clusters,
+                                'noise': n_noise,
+                                'score': diff
+                            })
+                            
+                            if diff < best_diff and n_clusters >= 2:
+                                best_diff = diff
+                                best_eps = eps_val
+                                best_min_samples = min_samp
+                                best_n_clusters = n_clusters
+                    
+                    if best_eps is not None:
+                        # Apply best parameters
+                        new_dbscan = DBSCAN(eps=best_eps, min_samples=best_min_samples)
+                        new_clusters = new_dbscan.fit_predict(pca_data_check)
+                        n_noise = sum(new_clusters == -1)
+                        
+                        st.session_state['retrained_model'] = new_dbscan
+                        st.session_state['model_type'] = 'dbscan'
+                        st.success(f"✅ Found {best_n_clusters} clusters using eps={best_eps:.3f}, min_samples={best_min_samples}")
+                        st.info(f"Noise points: {n_noise} ({n_noise/len(new_clusters)*100:.1f}%)")
+                        
+                        # Show top 5 parameter combinations
+                        with st.expander("View search results"):
+                            results_df = pd.DataFrame(results).sort_values('score').head(10)
+                            st.dataframe(results_df, use_container_width=True)
+                        
+                        st.rerun()
+                    else:
+                        st.error("❌ Could not find suitable parameters. Try adjusting target clusters.")
+        
+        elif retrain_method == "K-Means Alternative":
+            st.write("**K-Means Clustering:**")
+            st.info("K-Means guarantees exact number of clusters (no noise points)")
+            
+            n_clusters_kmeans = st.slider(
+                "Number of clusters",
+                min_value=2,
+                max_value=15,
+                value=5,
+                step=1
+            )
+            
+            kmeans_init = st.selectbox(
+                "Initialization method:",
+                ["k-means++", "random"],
+                help="k-means++ is usually better"
+            )
+            
+            if st.button("🚀 Apply K-Means", type="primary"):
+                with st.spinner("Training K-Means..."):
+                    from sklearn.cluster import KMeans
+                    
+                    kmeans = KMeans(
+                        n_clusters=n_clusters_kmeans,
+                        init=kmeans_init,
+                        n_init=10,
+                        random_state=42
+                    )
+                    kmeans_clusters = kmeans.fit_predict(pca_data_check)
+                    
+                    # Calculate cluster quality metrics
+                    from sklearn.metrics import silhouette_score, davies_bouldin_score
+                    
+                    silhouette = silhouette_score(pca_data_check, kmeans_clusters)
+                    davies_bouldin = davies_bouldin_score(pca_data_check, kmeans_clusters)
+                    
+                    st.session_state['retrained_model'] = kmeans
+                    st.session_state['model_type'] = 'kmeans'
+                    st.success(f"✅ Created {n_clusters_kmeans} clusters")
+                    st.info(f"Silhouette Score: {silhouette:.3f} (higher is better)\nDavies-Bouldin: {davies_bouldin:.3f} (lower is better)")
+                    st.rerun()
+    
     st.divider()
     
     st.write("**Adjust Prediction Threshold:**")
@@ -188,6 +385,15 @@ with st.sidebar.expander("🔧 Model Parameters", expanded=True):
     
     st.info(f"Current: Need {st.session_state['prediction_min_samples']} neighbors within {st.session_state['prediction_eps']:.3f} distance")
 
+# Use retrained model if available
+if 'retrained_model' in st.session_state:
+    dbscan_model = st.session_state['retrained_model']
+    model_type = st.session_state.get('model_type', 'dbscan')
+    if model_type == 'kmeans':
+        st.sidebar.success("✅ Using retrained K-Means model")
+    else:
+        st.sidebar.success("✅ Using retrained DBSCAN model")
+
 # Display data info
 with st.expander("📊 Training Data Overview", expanded=False):
     col1, col2, col3 = st.columns(3)
@@ -204,9 +410,109 @@ with st.expander("📊 Training Data Overview", expanded=False):
     if st.checkbox("Show all features"):
         st.write("**All Features:**")
         st.write(", ".join(feature_names))
+    
+    # Check cluster quality
+    if st.button("🔍 Analyze Training Clusters"):
+        with st.spinner("Analyzing clusters..."):
+            pca_data_train = get_trained_data(scaler, pca, df_model_temp)
+            if pca_data_train is not None:
+                clusters_train = dbscan_model.fit_predict(pca_data_train)
+                
+                unique_clusters = np.unique(clusters_train)
+                n_clusters = len(unique_clusters[unique_clusters != -1])
+                n_noise = sum(clusters_train == -1)
+                
+                st.subheader("🎯 Cluster Quality Analysis")
+                
+                col_a, col_b, col_c = st.columns(3)
+                with col_a:
+                    st.metric("Total Clusters Found", n_clusters)
+                with col_b:
+                    st.metric("Noise Points", f"{n_noise} ({n_noise/len(clusters_train)*100:.1f}%)")
+                with col_c:
+                    largest = max([sum(clusters_train == i) for i in unique_clusters if i != -1], default=0)
+                    st.metric("Largest Cluster Size", f"{largest} ({largest/len(clusters_train)*100:.1f}%)")
+                
+                # Warning if only one cluster
+                if n_clusters == 1:
+                    st.error("""
+                    ⚠️ **CRITICAL: Only 1 cluster found!**
+                    
+                    Your DBSCAN model has eps={:.4f} which is TOO LARGE, causing all points to merge into one cluster.
+                    
+                    **Solutions:**
+                    1. Retrain model with smaller eps (try 0.5-2.0)
+                    2. Increase min_samples (try 5-10)
+                    3. Check PCA transformation quality
+                    """.format(dbscan_model.eps))
+                
+                elif n_clusters == 0:
+                    st.error("""
+                    ⚠️ **CRITICAL: No clusters found!**
+                    
+                    Your DBSCAN model has eps={:.4f} which is TOO SMALL, all points are noise.
+                    
+                    **Solutions:**
+                    1. Retrain model with larger eps
+                    2. Decrease min_samples
+                    """.format(dbscan_model.eps))
+                
+                # Show cluster distribution
+                cluster_counts = pd.DataFrame({
+                    'Cluster': [f'Cluster {i}' if i != -1 else 'Noise' for i in unique_clusters],
+                    'Count': [sum(clusters_train == i) for i in unique_clusters],
+                    'Percentage': [sum(clusters_train == i)/len(clusters_train)*100 for i in unique_clusters]
+                })
+                cluster_counts = cluster_counts.sort_values('Count', ascending=False)
+                
+                st.dataframe(cluster_counts, use_container_width=True, hide_index=True)
+                
+                # Show which countries belong to each cluster
+                st.subheader("🌍 Countries by Cluster")
+                
+                # Create tabs for each cluster
+                cluster_tabs = st.tabs([f"Cluster {i}" if i != -1 else "Noise" for i in sorted(unique_clusters)])
+                
+                for idx, cluster_id in enumerate(sorted(unique_clusters)):
+                    with cluster_tabs[idx]:
+                        cluster_mask = clusters_train == cluster_id
+                        cluster_countries = countries[cluster_mask] if countries is not None else []
+                        
+                        if len(cluster_countries) > 0:
+                            col1, col2 = st.columns([1, 2])
+                            
+                            with col1:
+                                st.metric("Total Countries", len(cluster_countries))
+                                st.metric("Percentage", f"{len(cluster_countries)/len(clusters_train)*100:.1f}%")
+                            
+                            with col2:
+                                # Show as a nice grid
+                                countries_list = sorted(cluster_countries.tolist())
+                                
+                                # Create columns for better display
+                                num_cols = 3
+                                cols = st.columns(num_cols)
+                                
+                                for i, country in enumerate(countries_list):
+                                    col_idx = i % num_cols
+                                    with cols[col_idx]:
+                                        st.write(f"• {country}")
+                            
+                            # Option to download cluster members
+                            cluster_df = pd.DataFrame({'Country': countries_list})
+                            csv_cluster = cluster_df.to_csv(index=False)
+                            st.download_button(
+                                label=f"📥 Download Countries in {'Cluster ' + str(cluster_id) if cluster_id != -1 else 'Noise'}",
+                                data=csv_cluster,
+                                file_name=f"cluster_{cluster_id}_countries.csv",
+                                mime="text/csv",
+                                key=f"download_{cluster_id}"
+                            )
+                        else:
+                            st.info("No countries in this cluster")
 
 # Main content area with tabs
-tab1, tab2, tab3 = st.tabs(["🎯 Predict Cluster", "📈 Visualizations", "📋 Feature Analysis"])
+tab1, tab2, tab3, tab4 = st.tabs(["🎯 Predict Cluster", "📈 Visualizations", "🌍 Cluster Explorer", "📋 Feature Analysis"])
 
 with tab1:
     st.subheader("Enter Country Development Metrics")
@@ -722,8 +1028,264 @@ with tab2:
                     color_continuous_scale='Viridis'
                 )
                 st.plotly_chart(fig, use_container_width=True)
+                
+                # Show countries in each cluster
+                st.subheader("🌍 Cluster Membership Details")
+                
+                if countries is not None:
+                    selected_cluster_viz = st.selectbox(
+                        "Select cluster to view countries:",
+                        options=sorted(set(clusters_train)),
+                        format_func=lambda x: f"Cluster {x}" if x != -1 else "Noise",
+                        key="viz_cluster_select"
+                    )
+                    
+                    cluster_mask = clusters_train == selected_cluster_viz
+                    cluster_countries = countries[cluster_mask].tolist()
+                    
+                    col1, col2 = st.columns([1, 2])
+                    
+                    with col1:
+                        st.metric("Countries in this cluster", len(cluster_countries))
+                        st.metric("Percentage of total", f"{len(cluster_countries)/len(clusters_train)*100:.1f}%")
+                        
+                        # Download button
+                        cluster_df = pd.DataFrame({
+                            'Country': sorted(cluster_countries),
+                            'Cluster': selected_cluster_viz
+                        })
+                        csv_data = cluster_df.to_csv(index=False)
+                        st.download_button(
+                            label="📥 Download List",
+                            data=csv_data,
+                            file_name=f"cluster_{selected_cluster_viz}_countries.csv",
+                            mime="text/csv"
+                        )
+                    
+                    with col2:
+                        st.write("**Countries:**")
+                        # Display in columns
+                        countries_sorted = sorted(cluster_countries)
+                        num_display_cols = 3
+                        cols = st.columns(num_display_cols)
+                        
+                        for i, country in enumerate(countries_sorted):
+                            col_idx = i % num_display_cols
+                            with cols[col_idx]:
+                                st.write(f"• {country}")
+                    
+                    # Show cluster characteristics
+                    st.subheader("📊 Cluster Characteristics")
+                    
+                    # Get feature values for this cluster
+                    cluster_features = df_model_temp[cluster_mask]
+                    overall_features = df_model_temp
+                    
+                    # Compare cluster mean to overall mean
+                    comparison_data = []
+                    for feature in feature_names[:10]:  # Top 10 features
+                        cluster_mean = cluster_features[feature].mean()
+                        overall_mean = overall_features[feature].mean()
+                        diff_pct = ((cluster_mean - overall_mean) / overall_mean * 100) if overall_mean != 0 else 0
+                        
+                        comparison_data.append({
+                            'Feature': feature,
+                            'Cluster Mean': cluster_mean,
+                            'Overall Mean': overall_mean,
+                            'Difference (%)': diff_pct
+                        })
+                    
+                    comparison_df = pd.DataFrame(comparison_data)
+                    comparison_df = comparison_df.sort_values('Difference (%)', key=abs, ascending=False)
+                    
+                    st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+                else:
+                    st.warning("Country information not available")
 
 with tab3:
+    st.subheader("🌍 Explore Clusters and Countries")
+    
+    if st.button("🔄 Load Cluster Data", type="primary"):
+        with st.spinner("Loading cluster information..."):
+            pca_data_train = get_trained_data(scaler, pca, df_model_temp)
+            
+            if pca_data_train is not None:
+                model_type = st.session_state.get('model_type', 'dbscan')
+                
+                if model_type == 'kmeans':
+                    clusters_train = st.session_state['retrained_model'].labels_
+                else:
+                    clusters_train = dbscan_model.fit_predict(pca_data_train)
+                
+                unique_clusters = sorted(set(clusters_train))
+                
+                # Create comprehensive cluster summary
+                st.subheader("📊 Cluster Summary")
+                
+                summary_data = []
+                for cluster_id in unique_clusters:
+                    cluster_mask = clusters_train == cluster_id
+                    n_countries = cluster_mask.sum()
+                    pct = (n_countries / len(clusters_train)) * 100
+                    
+                    # Get representative countries (closest to cluster center)
+                    cluster_pca = pca_data_train[cluster_mask]
+                    cluster_center = cluster_pca.mean(axis=0)
+                    distances_to_center = np.linalg.norm(cluster_pca - cluster_center, axis=1)
+                    closest_idx = np.argmin(distances_to_center)
+                    
+                    cluster_countries = countries[cluster_mask] if countries is not None else []
+                    representative = cluster_countries.iloc[closest_idx] if len(cluster_countries) > 0 else "N/A"
+                    
+                    summary_data.append({
+                        'Cluster': f"Cluster {cluster_id}" if cluster_id != -1 else "Noise",
+                        'Countries': n_countries,
+                        'Percentage': f"{pct:.1f}%",
+                        'Representative': representative
+                    })
+                
+                summary_df = pd.DataFrame(summary_data)
+                st.dataframe(summary_df, use_container_width=True, hide_index=True)
+                
+                # Interactive cluster explorer
+                st.divider()
+                st.subheader("🔍 Detailed Cluster View")
+                
+                col1, col2 = st.columns([1, 2])
+                
+                with col1:
+                    selected_cluster = st.selectbox(
+                        "Select cluster:",
+                        options=unique_clusters,
+                        format_func=lambda x: f"Cluster {x} ({(clusters_train == x).sum()} countries)" if x != -1 else f"Noise ({(clusters_train == x).sum()} countries)"
+                    )
+                
+                with col2:
+                    search_country = st.text_input(
+                        "🔎 Search for a country:",
+                        placeholder="Type country name...",
+                        help="Find which cluster a specific country belongs to"
+                    )
+                
+                # Show search results
+                if search_country and countries is not None:
+                    matches = countries[countries.str.contains(search_country, case=False, na=False)]
+                    if len(matches) > 0:
+                        st.success(f"Found {len(matches)} matching countries:")
+                        for country in matches:
+                            country_idx = countries[countries == country].index[0]
+                            country_cluster = clusters_train[country_idx]
+                            cluster_label = f"Cluster {country_cluster}" if country_cluster != -1 else "Noise"
+                            st.info(f"**{country}** → {cluster_label}")
+                    else:
+                        st.warning(f"No countries found matching '{search_country}'")
+                
+                # Display selected cluster details
+                st.divider()
+                cluster_mask = clusters_train == selected_cluster
+                cluster_countries = countries[cluster_mask] if countries is not None else []
+                
+                st.subheader(f"{'Cluster ' + str(selected_cluster) if selected_cluster != -1 else 'Noise'} - Details")
+                
+                col_a, col_b, col_c = st.columns(3)
+                with col_a:
+                    st.metric("Total Countries", len(cluster_countries))
+                with col_b:
+                    st.metric("Percentage", f"{len(cluster_countries)/len(clusters_train)*100:.1f}%")
+                with col_c:
+                    # Calculate average distance within cluster
+                    if selected_cluster != -1:
+                        cluster_pca = pca_data_train[cluster_mask]
+                        cluster_center = cluster_pca.mean(axis=0)
+                        avg_dist = np.mean(np.linalg.norm(cluster_pca - cluster_center, axis=1))
+                        st.metric("Avg Distance to Center", f"{avg_dist:.3f}")
+                
+                # Countries list with sorting options
+                if len(cluster_countries) > 0:
+                    st.write("**Countries in this cluster:**")
+                    
+                    sort_option = st.radio(
+                        "Sort by:",
+                        ["Alphabetical", "Distance to Center"],
+                        horizontal=True
+                    )
+                    
+                    if sort_option == "Alphabetical":
+                        countries_display = sorted(cluster_countries.tolist())
+                        display_df = pd.DataFrame({
+                            'Rank': range(1, len(countries_display) + 1),
+                            'Country': countries_display
+                        })
+                    else:
+                        # Calculate distances
+                        cluster_pca = pca_data_train[cluster_mask]
+                        cluster_center = cluster_pca.mean(axis=0)
+                        distances = np.linalg.norm(cluster_pca - cluster_center, axis=1)
+                        
+                        sorted_indices = np.argsort(distances)
+                        countries_sorted = cluster_countries.iloc[sorted_indices].tolist()
+                        distances_sorted = distances[sorted_indices]
+                        
+                        display_df = pd.DataFrame({
+                            'Rank': range(1, len(countries_sorted) + 1),
+                            'Country': countries_sorted,
+                            'Distance to Center': distances_sorted.round(4)
+                        })
+                    
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+                    
+                    # Download options
+                    col_dl1, col_dl2 = st.columns(2)
+                    
+                    with col_dl1:
+                        csv_data = display_df.to_csv(index=False)
+                        st.download_button(
+                            label="📥 Download as CSV",
+                            data=csv_data,
+                            file_name=f"cluster_{selected_cluster}_countries.csv",
+                            mime="text/csv"
+                        )
+                    
+                    with col_dl2:
+                        # Copy to clipboard format
+                        countries_text = "\n".join(display_df['Country'].tolist())
+                        st.download_button(
+                            label="📋 Download as Text",
+                            data=countries_text,
+                            file_name=f"cluster_{selected_cluster}_countries.txt",
+                            mime="text/plain"
+                        )
+                
+                # Cluster characteristics comparison
+                if selected_cluster != -1:
+                    st.divider()
+                    st.subheader("📊 How this cluster differs from others")
+                    
+                    cluster_features = df_model_temp[cluster_mask]
+                    other_features = df_model_temp[~cluster_mask]
+                    
+                    comparison_data = []
+                    for feature in feature_names[:15]:
+                        cluster_mean = cluster_features[feature].mean()
+                        other_mean = other_features[feature].mean()
+                        diff = cluster_mean - other_mean
+                        diff_pct = (diff / other_mean * 100) if other_mean != 0 else 0
+                        
+                        comparison_data.append({
+                            'Feature': feature,
+                            'This Cluster': f"{cluster_mean:.2f}",
+                            'Other Clusters': f"{other_mean:.2f}",
+                            'Difference': f"{diff:+.2f}",
+                            'Difference (%)': f"{diff_pct:+.1f}%"
+                        })
+                    
+                    comparison_df = pd.DataFrame(comparison_data)
+                    comparison_df = comparison_df.iloc[comparison_df['Difference (%)'].str.rstrip('%').astype(float).abs().argsort()[::-1]]
+                    
+                    st.write("**Top 15 distinctive features:**")
+                    st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+
+with tab4:
     st.subheader("🔍 Feature Analysis")
     
     # PCA explained variance
