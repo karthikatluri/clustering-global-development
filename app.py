@@ -1103,6 +1103,189 @@ with tab2:
                     st.warning("Country information not available")
 
 with tab3:
+    st.subheader("🌍 Explore Clusters and Countries")
+    
+    if st.button("🔄 Load Cluster Data", type="primary"):
+        with st.spinner("Loading cluster information..."):
+            pca_data_train = get_trained_data(scaler, pca, df_model_temp)
+            
+            if pca_data_train is not None:
+                model_type = st.session_state.get('model_type', 'dbscan')
+                
+                if model_type == 'kmeans':
+                    clusters_train = st.session_state['retrained_model'].labels_
+                else:
+                    clusters_train = dbscan_model.fit_predict(pca_data_train)
+                
+                unique_clusters = sorted(set(clusters_train))
+                
+                # Create comprehensive cluster summary
+                st.subheader("📊 Cluster Summary")
+                
+                summary_data = []
+                for cluster_id in unique_clusters:
+                    cluster_mask = clusters_train == cluster_id
+                    n_countries = cluster_mask.sum()
+                    pct = (n_countries / len(clusters_train)) * 100
+                    
+                    # Get representative countries (closest to cluster center)
+                    cluster_pca = pca_data_train[cluster_mask]
+                    cluster_center = cluster_pca.mean(axis=0)
+                    distances_to_center = np.linalg.norm(cluster_pca - cluster_center, axis=1)
+                    closest_idx = np.argmin(distances_to_center)
+                    
+                    cluster_countries = countries[cluster_mask] if countries is not None else []
+                    representative = cluster_countries.iloc[closest_idx] if len(cluster_countries) > 0 else "N/A"
+                    
+                    summary_data.append({
+                        'Cluster': f"Cluster {cluster_id}" if cluster_id != -1 else "Noise",
+                        'Countries': n_countries,
+                        'Percentage': f"{pct:.1f}%",
+                        'Representative': representative
+                    })
+                
+                summary_df = pd.DataFrame(summary_data)
+                st.dataframe(summary_df, use_container_width=True, hide_index=True)
+                
+                # Interactive cluster explorer
+                st.divider()
+                st.subheader("🔍 Detailed Cluster View")
+                
+                col1, col2 = st.columns([1, 2])
+                
+                with col1:
+                    selected_cluster = st.selectbox(
+                        "Select cluster:",
+                        options=unique_clusters,
+                        format_func=lambda x: f"Cluster {x} ({(clusters_train == x).sum()} countries)" if x != -1 else f"Noise ({(clusters_train == x).sum()} countries)"
+                    )
+                
+                with col2:
+                    search_country = st.text_input(
+                        "🔎 Search for a country:",
+                        placeholder="Type country name...",
+                        help="Find which cluster a specific country belongs to"
+                    )
+                
+                # Show search results
+                if search_country and countries is not None:
+                    matches = countries[countries.str.contains(search_country, case=False, na=False)]
+                    if len(matches) > 0:
+                        st.success(f"Found {len(matches)} matching countries:")
+                        for country in matches:
+                            country_idx = countries[countries == country].index[0]
+                            country_cluster = clusters_train[country_idx]
+                            cluster_label = f"Cluster {country_cluster}" if country_cluster != -1 else "Noise"
+                            st.info(f"**{country}** → {cluster_label}")
+                    else:
+                        st.warning(f"No countries found matching '{search_country}'")
+                
+                # Display selected cluster details
+                st.divider()
+                cluster_mask = clusters_train == selected_cluster
+                cluster_countries = countries[cluster_mask] if countries is not None else []
+                
+                st.subheader(f"{'Cluster ' + str(selected_cluster) if selected_cluster != -1 else 'Noise'} - Details")
+                
+                col_a, col_b, col_c = st.columns(3)
+                with col_a:
+                    st.metric("Total Countries", len(cluster_countries))
+                with col_b:
+                    st.metric("Percentage", f"{len(cluster_countries)/len(clusters_train)*100:.1f}%")
+                with col_c:
+                    # Calculate average distance within cluster
+                    if selected_cluster != -1:
+                        cluster_pca = pca_data_train[cluster_mask]
+                        cluster_center = cluster_pca.mean(axis=0)
+                        avg_dist = np.mean(np.linalg.norm(cluster_pca - cluster_center, axis=1))
+                        st.metric("Avg Distance to Center", f"{avg_dist:.3f}")
+                
+                # Countries list with sorting options
+                if len(cluster_countries) > 0:
+                    st.write("**Countries in this cluster:**")
+                    
+                    sort_option = st.radio(
+                        "Sort by:",
+                        ["Alphabetical", "Distance to Center"],
+                        horizontal=True
+                    )
+                    
+                    if sort_option == "Alphabetical":
+                        countries_display = sorted(cluster_countries.tolist())
+                        display_df = pd.DataFrame({
+                            'Rank': range(1, len(countries_display) + 1),
+                            'Country': countries_display
+                        })
+                    else:
+                        # Calculate distances
+                        cluster_pca = pca_data_train[cluster_mask]
+                        cluster_center = cluster_pca.mean(axis=0)
+                        distances = np.linalg.norm(cluster_pca - cluster_center, axis=1)
+                        
+                        sorted_indices = np.argsort(distances)
+                        countries_sorted = cluster_countries.iloc[sorted_indices].tolist()
+                        distances_sorted = distances[sorted_indices]
+                        
+                        display_df = pd.DataFrame({
+                            'Rank': range(1, len(countries_sorted) + 1),
+                            'Country': countries_sorted,
+                            'Distance to Center': distances_sorted.round(4)
+                        })
+                    
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+                    
+                    # Download options
+                    col_dl1, col_dl2 = st.columns(2)
+                    
+                    with col_dl1:
+                        csv_data = display_df.to_csv(index=False)
+                        st.download_button(
+                            label="📥 Download as CSV",
+                            data=csv_data,
+                            file_name=f"cluster_{selected_cluster}_countries.csv",
+                            mime="text/csv"
+                        )
+                    
+                    with col_dl2:
+                        # Copy to clipboard format
+                        countries_text = "\n".join(display_df['Country'].tolist())
+                        st.download_button(
+                            label="📋 Download as Text",
+                            data=countries_text,
+                            file_name=f"cluster_{selected_cluster}_countries.txt",
+                            mime="text/plain"
+                        )
+                
+                # Cluster characteristics comparison
+                if selected_cluster != -1:
+                    st.divider()
+                    st.subheader("📊 How this cluster differs from others")
+                    
+                    cluster_features = df_model_temp[cluster_mask]
+                    other_features = df_model_temp[~cluster_mask]
+                    
+                    comparison_data = []
+                    for feature in feature_names[:15]:
+                        cluster_mean = cluster_features[feature].mean()
+                        other_mean = other_features[feature].mean()
+                        diff = cluster_mean - other_mean
+                        diff_pct = (diff / other_mean * 100) if other_mean != 0 else 0
+                        
+                        comparison_data.append({
+                            'Feature': feature,
+                            'This Cluster': f"{cluster_mean:.2f}",
+                            'Other Clusters': f"{other_mean:.2f}",
+                            'Difference': f"{diff:+.2f}",
+                            'Difference (%)': f"{diff_pct:+.1f}%"
+                        })
+                    
+                    comparison_df = pd.DataFrame(comparison_data)
+                    comparison_df = comparison_df.iloc[comparison_df['Difference (%)'].str.rstrip('%').astype(float).abs().argsort()[::-1]]
+                    
+                    st.write("**Top 15 distinctive features:**")
+                    st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+
+with tab4:
     st.subheader("🔍 Feature Analysis")
     
     # PCA explained variance
