@@ -1,22 +1,4 @@
-# Get training data in PCA space
-                pca_data_train = get_trained_data(scaler, pca, df_model_temp)
-                
-                if pca_data_train is not None:
-                    # Check if using K-Means or DBSCAN
-                    model_type = st.session_state.get('model_type', 'dbscan')
-                    
-                    if model_type == 'kmeans':
-                        # K-Means prediction
-                        prediction = dbscan_model.predict(pca_input)[0]
-                        
-                        # Calculate distance to cluster center
-                        cluster_center = dbscan_model.cluster_centers_[prediction]
-                        nearest_distance = np.linalg.norm(pca_input - cluster_center)
-                        
-                        # Find nearest training point in same cluster
-                        clusters_train = dbscan_model.labels_
-                        same_cluster_mask = clusters_train == prediction
-                        distancesimport streamlit as st
+import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
@@ -182,170 +164,40 @@ with st.sidebar.expander("🔧 Model Parameters", expanded=True):
     
     # Option to retrain model
     if st.checkbox("🔄 Retrain Model", value=False):
-        st.write("**Choose Method:**")
+        st.write("**New DBSCAN Parameters:**")
         
-        retrain_method = st.radio(
-            "Clustering approach:",
-            ["Manual DBSCAN Parameters", "Target Number of Clusters", "K-Means Alternative"],
-            help="Different ways to configure clustering"
+        new_eps = st.slider(
+            "eps (distance threshold)",
+            min_value=0.1,
+            max_value=5.0,
+            value=1.0,
+            step=0.1,
+            help="Smaller = more clusters, larger = fewer clusters"
         )
         
-        if retrain_method == "Manual DBSCAN Parameters":
-            st.write("**DBSCAN Parameters:**")
-            
-            new_eps = st.slider(
-                "eps (distance threshold)",
-                min_value=0.1,
-                max_value=10.0,
-                value=1.0,
-                step=0.1,
-                help="Smaller = more clusters, larger = fewer clusters"
-            )
-            
-            new_min_samples = st.slider(
-                "min_samples",
-                min_value=2,
-                max_value=20,
-                value=5,
-                step=1,
-                help="Higher = stricter clustering"
-            )
-            
-            if st.button("🚀 Apply DBSCAN Parameters", type="primary"):
-                with st.spinner("Retraining DBSCAN..."):
-                    from sklearn.cluster import DBSCAN
-                    new_dbscan = DBSCAN(eps=new_eps, min_samples=new_min_samples)
-                    new_clusters = new_dbscan.fit_predict(pca_data_check)
-                    
-                    n_new_clusters = len(set(new_clusters)) - (1 if -1 in new_clusters else 0)
-                    n_noise = sum(new_clusters == -1)
-                    
+        new_min_samples = st.slider(
+            "min_samples",
+            min_value=2,
+            max_value=20,
+            value=5,
+            step=1,
+            help="Higher = stricter clustering"
+        )
+        
+        if st.button("🚀 Apply New Parameters", type="primary"):
+            with st.spinner("Retraining DBSCAN..."):
+                from sklearn.cluster import DBSCAN
+                new_dbscan = DBSCAN(eps=new_eps, min_samples=new_min_samples)
+                new_clusters = new_dbscan.fit_predict(pca_data_check)
+                
+                n_new_clusters = len(set(new_clusters)) - (1 if -1 in new_clusters else 0)
+                
+                if n_new_clusters > 1:
                     st.session_state['retrained_model'] = new_dbscan
-                    st.session_state['model_type'] = 'dbscan'
-                    st.success(f"✅ Found {n_new_clusters} clusters, {n_noise} noise points")
+                    st.success(f"✅ Retrained! Found {n_new_clusters} clusters")
                     st.rerun()
-        
-        elif retrain_method == "Target Number of Clusters":
-            st.write("**Specify Desired Clusters:**")
-            
-            target_clusters = st.slider(
-                "Number of clusters",
-                min_value=2,
-                max_value=15,
-                value=5,
-                step=1,
-                help="DBSCAN will try to find approximately this many clusters"
-            )
-            
-            search_method = st.selectbox(
-                "Search strategy:",
-                ["Quick Search", "Thorough Search"],
-                help="Quick = faster, Thorough = more accurate"
-            )
-            
-            if st.button("🎯 Find Best Parameters", type="primary"):
-                with st.spinner(f"Searching for parameters to create ~{target_clusters} clusters..."):
-                    from sklearn.cluster import DBSCAN
-                    
-                    # Search for best eps
-                    if search_method == "Quick Search":
-                        eps_range = np.linspace(0.3, 3.0, 15)
-                    else:
-                        eps_range = np.linspace(0.2, 5.0, 30)
-                    
-                    best_eps = None
-                    best_min_samples = None
-                    best_diff = float('inf')
-                    best_n_clusters = 0
-                    
-                    results = []
-                    
-                    for eps_val in eps_range:
-                        for min_samp in [3, 5, 7, 10]:
-                            test_dbscan = DBSCAN(eps=eps_val, min_samples=min_samp)
-                            test_clusters = test_dbscan.fit_predict(pca_data_check)
-                            n_clusters = len(set(test_clusters)) - (1 if -1 in test_clusters else 0)
-                            n_noise = sum(test_clusters == -1)
-                            
-                            # Penalize too much noise
-                            noise_penalty = (n_noise / len(test_clusters)) * 2
-                            diff = abs(n_clusters - target_clusters) + noise_penalty
-                            
-                            results.append({
-                                'eps': eps_val,
-                                'min_samples': min_samp,
-                                'clusters': n_clusters,
-                                'noise': n_noise,
-                                'score': diff
-                            })
-                            
-                            if diff < best_diff and n_clusters >= 2:
-                                best_diff = diff
-                                best_eps = eps_val
-                                best_min_samples = min_samp
-                                best_n_clusters = n_clusters
-                    
-                    if best_eps is not None:
-                        # Apply best parameters
-                        new_dbscan = DBSCAN(eps=best_eps, min_samples=best_min_samples)
-                        new_clusters = new_dbscan.fit_predict(pca_data_check)
-                        n_noise = sum(new_clusters == -1)
-                        
-                        st.session_state['retrained_model'] = new_dbscan
-                        st.session_state['model_type'] = 'dbscan'
-                        st.success(f"✅ Found {best_n_clusters} clusters using eps={best_eps:.3f}, min_samples={best_min_samples}")
-                        st.info(f"Noise points: {n_noise} ({n_noise/len(new_clusters)*100:.1f}%)")
-                        
-                        # Show top 5 parameter combinations
-                        with st.expander("View search results"):
-                            results_df = pd.DataFrame(results).sort_values('score').head(10)
-                            st.dataframe(results_df, use_container_width=True)
-                        
-                        st.rerun()
-                    else:
-                        st.error("❌ Could not find suitable parameters. Try adjusting target clusters.")
-        
-        elif retrain_method == "K-Means Alternative":
-            st.write("**K-Means Clustering:**")
-            st.info("K-Means guarantees exact number of clusters (no noise points)")
-            
-            n_clusters_kmeans = st.slider(
-                "Number of clusters",
-                min_value=2,
-                max_value=15,
-                value=5,
-                step=1
-            )
-            
-            kmeans_init = st.selectbox(
-                "Initialization method:",
-                ["k-means++", "random"],
-                help="k-means++ is usually better"
-            )
-            
-            if st.button("🚀 Apply K-Means", type="primary"):
-                with st.spinner("Training K-Means..."):
-                    from sklearn.cluster import KMeans
-                    
-                    kmeans = KMeans(
-                        n_clusters=n_clusters_kmeans,
-                        init=kmeans_init,
-                        n_init=10,
-                        random_state=42
-                    )
-                    kmeans_clusters = kmeans.fit_predict(pca_data_check)
-                    
-                    # Calculate cluster quality metrics
-                    from sklearn.metrics import silhouette_score, davies_bouldin_score
-                    
-                    silhouette = silhouette_score(pca_data_check, kmeans_clusters)
-                    davies_bouldin = davies_bouldin_score(pca_data_check, kmeans_clusters)
-                    
-                    st.session_state['retrained_model'] = kmeans
-                    st.session_state['model_type'] = 'kmeans'
-                    st.success(f"✅ Created {n_clusters_kmeans} clusters")
-                    st.info(f"Silhouette Score: {silhouette:.3f} (higher is better)\nDavies-Bouldin: {davies_bouldin:.3f} (lower is better)")
-                    st.rerun()
+                else:
+                    st.error(f"❌ Still only {n_new_clusters} cluster(s). Try different parameters.")
     
     st.divider()
     
@@ -388,11 +240,7 @@ with st.sidebar.expander("🔧 Model Parameters", expanded=True):
 # Use retrained model if available
 if 'retrained_model' in st.session_state:
     dbscan_model = st.session_state['retrained_model']
-    model_type = st.session_state.get('model_type', 'dbscan')
-    if model_type == 'kmeans':
-        st.sidebar.success("✅ Using retrained K-Means model")
-    else:
-        st.sidebar.success("✅ Using retrained DBSCAN model")
+    st.sidebar.success("✅ Using retrained model")
 
 # Display data info
 with st.expander("📊 Training Data Overview", expanded=False):
